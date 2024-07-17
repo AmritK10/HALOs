@@ -259,6 +259,78 @@ def get_hh(split: str, human_prefix: str, human_suffix: str, assistant_prefix: s
     return data
 
 
+def get_goldenhh(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str, only_helpful = False, only_harmless = False) -> Dataset:
+    """
+    Load the Anthropic Helpful-Harmless dataset from Huggingface and convert it into to a Dataset.
+    For this dataset, the SFT text is the preferred response.
+    
+    Args:
+        - split: one of 'test', 'train'
+        - human_prefix: marks start of human turn ('<|user|>' is the recommended choice and is set in config.yaml)
+        - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of human turn ('<|assistant|>' is the recommended choice and is set in config.yaml)
+        - assistant_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
+        - only_helpful: only the helpfulness data
+        - only_harmless: only the harmlessness data
+
+    Returns:   
+        A Dataset instance.
+    """
+    rank0_print(f'Loading Golden HH dataset ({split} split) from Huggingface...')
+    data_range = 1500
+    if split == 'test':
+        data_range = 256
+    dataset = datasets.load_dataset('Unified-Language-Model-Alignment/Anthropic_HH_Golden', split=split).select(range(data_range))
+    data = Dataset('Anthropic_HH_Golden')
+
+    if on_rank0():
+        dataset = tqdm.tqdm(dataset, desc='Processing HH')
+
+    def split_prompt_and_responses(ex):
+        search_term = '\n\nAssistant: '
+        search_term_idx = ex['chosen'].rfind(search_term)
+        prompt = ex['chosen'][:search_term_idx + len(search_term)]
+        chosen_response = ex['chosen'][len(prompt):]
+        rejected_response = ex['rejected'][len(prompt):]
+        return prompt, chosen_response, rejected_response
+
+    for row in dataset:
+        prompt, chosen, rejected = split_prompt_and_responses(row)
+        # strip trailing spaces to avoid tokenization issues
+        chunks = []
+        # turn doesn't always start with \n\n so watch out
+        for chunk in re.split(r'\s*(Human:|Assistant:)\s+', prompt): 
+            if chunk.startswith('Human'):
+                chunk = re.sub(r'\s*Human:\s*', human_prefix, chunk) + human_suffix
+            elif chunk.startswith('Assistant'):
+                chunk = re.sub(r'\s*Assistant:\s*', assistant_prefix, chunk) + assistant_suffix
+            else:
+                pass
+
+            if chunk != '':
+                chunks.append(chunk)
+
+        prompt = ''.join(chunks)
+        responses = [chosen + assistant_suffix, rejected + assistant_suffix]
+        i,j = data[prompt].num_generations(), data[prompt].num_generations() + 1
+
+        data[prompt].prompt = prompt
+        data[prompt].generations.extend(responses)
+        data[prompt].pairs.append((i, j))
+        data[prompt].sft_index = 0
+
+        if only_helpful:
+            data[prompt].dataset_name = 'hh_helpful'
+        elif only_harmless:
+            data[prompt].dataset_name = 'hh_harmless'
+        else:
+            data[prompt].dataset_name = 'golden_hh'
+
+        data[prompt].remove_extra_spaces()
+
+    return data
+
+
 def get_hh_helpful(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
     rank0_print(f'Loading helpful HH dataset ({split} split) from Huggingface...')
     return get_hh(split, human_prefix, human_suffix, assistant_prefix, assistant_suffix, only_helpful=True)

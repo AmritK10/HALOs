@@ -73,7 +73,7 @@ def main(config: DictConfig):
 
     # saved policy can be force set to null to sample from pretrained model
     if config.saved_policy is not None:
-        state_dict = torch.load(os.path.join(config.cache_dir, config.saved_policy), map_location='cpu')
+        state_dict = torch.load(config.saved_policy, map_location='cpu')
         step, metrics = state_dict['step_idx'], state_dict['metrics']
         print(f'loading pre-trained weights for policy at step {step} from {config.saved_policy} with metrics {json.dumps(metrics, indent=2)}')
         policy.load_state_dict(state_dict['state'])
